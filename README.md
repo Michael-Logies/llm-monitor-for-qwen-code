@@ -20,6 +20,10 @@ German interface:
 
 ![LLM Monitor (German interface)](screenshots/monitor-de.png)
 
+Chinese interface:
+
+![LLM Monitor (Chinese interface)](screenshots/monitor-zh.png)
+
 ## Why
 
 Qwen Code can send OpenTelemetry telemetry about every model request — but the feature is barely documented, and there was no simple way to see it. [Issue #14466](https://github.com/QwenLM/qwen-code/issues/14466) documents the journey: the `otlpProtocol: "http"` setting silently produces **OTLP/JSON** (chunked, `application/json`) — not protobuf, as one would assume — and no stock receiver displays it out of the box.
