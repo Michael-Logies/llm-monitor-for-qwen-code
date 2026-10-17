@@ -422,7 +422,8 @@ def fmt_age(sec):
         return T('age_s') % sec
     if sec < 5400:
         return T('age_min') % (sec // 60)
-    return T('age_h') % (sec / 3600.0)
+    out = T('age_h') % (sec / 3600.0)
+    return out.replace('.', _sep()) if LANG == 'de' else out
 
 
 class OtlpState:
