@@ -7,6 +7,10 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    (gen_ai.response.model) · Anbieter-Host aus der echten Request-URL (url.full)
    · HTTP-Status. Vor der ersten Anfrage: die konfigurierte Route aus der
    settings.json, klar als „konfiguriert" markiert.
+   Läuft die Route über einen lokalen LLM-Proxy (Loopback-Host), sagt die
+   Request-URL nichts über die echte Quelle — dann löst der Monitor sie über
+   die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
+   eingesetzten Provider, oder Z.ai als Notfall-Fallback.
 2. Zeile 2 (OTel-Datenstrom): Denkphase (TTFB) · tok/s · Antwort-Tokens ·
    gelesene Tokens (davon Cache) · Dauer.
 3. Zeile 3: Alter der letzten Messung · Max-Kontextfenster · unterstützte
@@ -23,6 +27,9 @@ Konfiguration über Umgebungsvariablen:
   QWEN_MONITOR_SETTINGS  Pfad zur settings.json (Default ~/.qwen/settings.json)
   QWEN_MONITOR_OTLP_PORT OTLP-Empfangsport (Default 4318)
   QWEN_MONITOR_WIDTH     Badge-Breite in Pixeln (Default 600)
+  QWEN_MONITOR_PROXY_STATUS  Status-URL des lokalen LLM-Proxys für die
+                         Quellen-Auflösung bei Loopback-Routen
+                         (Default http://127.0.0.1:8787/status)
 
 Bedienung: Verschieben mit gedrückter linker Maustaste (Position in
 ~/.qwen/route-widget-pos.json), Rechtsklick → Beenden, Einzelinstanz via
@@ -52,6 +59,12 @@ OTLP_PORT = int(os.environ.get('QWEN_MONITOR_OTLP_PORT', '4318'))
 POLL_MS = 3000
 MARGIN = 24
 WIDTH = int(os.environ.get('QWEN_MONITOR_WIDTH', '600'))
+# Quellen-Auflösung für Loopback-Routen: Läuft die Anfrage über einen lokalen
+# Proxy, zeigt die Request-URL (127.0.0.1) nicht die echte Quelle — die liefert
+# die /status-API des zai-fallback-proxy (Leg + OpenRouter-Provider je Anfrage).
+PROXY_STATUS_URL = os.environ.get(
+    'QWEN_MONITOR_PROXY_STATUS', 'http://127.0.0.1:8787/status')
+LOOPBACK_HOSTS = {'127.0.0.1', 'localhost', '::1'}
 
 # Anzeige-Kürzel für Modell-IDs (unbekannte erscheinen roh).
 MODEL_LABEL = {
@@ -87,6 +100,7 @@ L10N = {
         'no_metrics': 'Span ohne Messwerte',
         'awaiting': 'warte auf erste Anfrage', 'configured': 'konfiguriert',
         'unknown': 'Route unbekannt', 'quit': 'Beenden',
+        'zai_emergency': 'Z.ai (Notfall)', 'local_proxy': 'lokaler Proxy',
         'err_generic': 'Fehler',
         'age_s': 'vor %d s', 'age_min': 'vor %d min', 'age_h': 'vor %.1f h',
     },
@@ -101,6 +115,7 @@ L10N = {
         'no_metrics': 'Span without metrics',
         'awaiting': 'waiting for first request', 'configured': 'configured',
         'unknown': 'unknown route', 'quit': 'Quit',
+        'zai_emergency': 'Z.ai (emergency)', 'local_proxy': 'local proxy',
         'err_generic': 'error',
         'age_s': '%d s ago', 'age_min': '%d min ago', 'age_h': '%.1f h ago',
     },
@@ -115,6 +130,7 @@ L10N = {
         'no_metrics': 'Span 无指标',
         'awaiting': '等待首次请求', 'configured': '已配置',
         'unknown': '未知路由', 'quit': '退出',
+        'zai_emergency': 'Z.ai（应急）', 'local_proxy': '本地代理',
         'err_generic': '错误',
         'age_s': '%d 秒前', 'age_min': '%d 分钟前', 'age_h': '%.1f 小时前',
     },
@@ -590,6 +606,8 @@ class App:
         self.settings_mtime = None
         self.settings_age = None     # Sekunden seit letzter settings.json-Änderung
         self.otlp_ok = True
+        self.proxy_lock = threading.Lock()
+        self.proxy_info = None       # /status-Antwort des lokalen LLM-Proxys
 
         self.win.connect('button-press-event', self.on_press)
         self.win.connect('configure-event', self.on_configure)
@@ -599,6 +617,7 @@ class App:
         self.win.show_all()
         self.render()
         self.start_otlp()
+        self.start_proxy_poll()
         GLib.timeout_add(POLL_MS, self.poll)
         self.poll()
 
@@ -613,6 +632,35 @@ class App:
         except OSError as e:
             self.otlp_ok = False
             sys.stderr.write('OTLP-Server nicht gestartet: %r\n' % e)
+
+    # --- Proxy-/status-Poll: Quellen-Auflösung für Loopback-Routen ---
+    def start_proxy_poll(self):
+        def loop():
+            was_up = None
+            while True:
+                info = None
+                try:
+                    with urllib.request.urlopen(PROXY_STATUS_URL, timeout=2) as resp:
+                        info = json.loads(resp.read().decode('utf-8'))
+                except Exception:
+                    info = None
+                if not isinstance(info, dict) or \
+                        not isinstance(info.get('last'), dict):
+                    info = None  # kein (erreichbarer) LLM-Proxy
+                with self.proxy_lock:
+                    self.proxy_info = info
+                if (info is not None) != was_up:
+                    sys.stderr.write('PROXY %s: %s\n'
+                                     % ('erreichbar' if info is not None
+                                        else 'NICHT erreichbar', PROXY_STATUS_URL))
+                    sys.stderr.flush()
+                    was_up = info is not None
+                time.sleep(POLL_MS / 1000.0)
+        threading.Thread(target=loop, daemon=True).start()
+
+    def proxy_snapshot(self):
+        with self.proxy_lock:
+            return self.proxy_info
 
     # --- Positionierung (wie v1) ---
     def place(self):
@@ -700,28 +748,32 @@ class App:
         if last:
             url = str(http.get('url_full') or '')
             status = http.get('http_status')
-            if 'z.ai' in url:
-                color = COLOR_ZAI
-            elif 'openrouter' in url:
-                color = COLOR_OR
-            elif '127.0.0.1' in url or 'localhost' in url:
-                color = COLOR_PROXY
-            elif 'dashscope' in url:
-                color = COLOR_MS
-            else:
-                color = '#e8eaed'
-            parts = ['<span foreground="%s">%s</span>'
-                     % (color, self.esc(last.get('model') or T('unknown')))]
+            host = None
             if '://' in url:
                 try:
                     host = urllib.parse.urlsplit(url).hostname
                 except Exception:
                     host = None
+            if host in LOOPBACK_HOSTS:
+                # Loopback = Anfrage lief über den lokalen LLM-Proxy; die echte
+                # Quelle (Z.ai direkt / OpenRouter + Provider) liefert /status.
+                line1 = self.render_proxy_line1(status)
+            else:
+                if 'z.ai' in url:
+                    color = COLOR_ZAI
+                elif 'openrouter' in url:
+                    color = COLOR_OR
+                elif 'dashscope' in url:
+                    color = COLOR_MS
+                else:
+                    color = '#e8eaed'
+                parts = ['<span foreground="%s">%s</span>'
+                         % (color, self.esc(last.get('model') or T('unknown')))]
                 if host:
                     parts.append(self.esc(host))
-            if status is not None:
-                parts.append('HTTP %s' % self.esc(status))
-            line1 = ' · '.join(parts)
+                if status is not None:
+                    parts.append('HTTP %s' % self.esc(status))
+                line1 = ' · '.join(parts)
         elif r:
             cfg = ' · '.join(str(x) for x in (r['label'], r.get('model'),
                                               r.get('effort')) if x)
@@ -746,6 +798,32 @@ class App:
         if self.settings_age is not None:
             ctx.append(T('config_changed') % fmt_age(int(self.settings_age)))
         self.set_markup(self.lbl_ctx, ' · '.join(ctx) or ' ')
+
+    def render_proxy_line1(self, status):
+        """Zeile 1 bei Loopback-Route — echte Quelle aus der Proxy-/status-API."""
+        rec = ((self.proxy_snapshot() or {}).get('last')) or {}
+        leg = str(rec.get('route') or '')
+        model = rec.get('modelReported') or rec.get('model') or T('unknown')
+        if leg.startswith('OR'):
+            color = COLOR_OR
+            src = 'OpenRouter'
+            if rec.get('provider'):
+                src += ' · %s' % rec['provider']
+        elif 'NOTFALL' in leg:
+            color = COLOR_PROXY
+            src = T('zai_emergency')
+        elif leg.startswith('ZAI'):
+            color = COLOR_ZAI
+            src = 'Z.ai'
+        else:
+            # Proxy nicht erreichbar oder ohne Anfrage — Loopback kennzeichnen.
+            color = COLOR_PROXY
+            src = T('local_proxy')
+        parts = ['<span foreground="%s">%s</span>' % (color, self.esc(model)),
+                 self.esc(src)]
+        if status is not None:
+            parts.append('HTTP %s' % self.esc(status))
+        return ' · '.join(parts)
 
     def render_telemetry(self):
         last, total = STATE.snapshot()
