@@ -10,11 +10,13 @@
 
 | Line | Meaning |
 |------|---------|
-| `glm-5.3-flash · api.z.ai · HTTP 200` | The model that **actually answered**, the provider host that was **really contacted** (read from the network request, not from a configuration file), and the HTTP status |
+| `glm-5.3-flash · Z.ai · HTTP 200` or `glm-5.3-flash · OpenRouter · inference.net · HTTP 200` | The model that **actually answered**, the source that **really produced it** (read from the network request, not from a configuration file), and the HTTP status |
 | `Thinking time (TTFB) 6.6 s · 44.1 tok/s · Reply 374 T · read 77,818 T · Duration 15.0 s` | Waiting time before the answer started ("thinking"), output speed, size of the answer, how much context the model read, total duration |
 | `last request 19 s ago · Max context 1.0M · reads images, video, PDF · config changed 5.0 h ago` | Age of the last measurement, the model's context window, supported input types, and when your Qwen Code configuration was last changed |
 
 A token ("T") is the unit language models count text in — roughly ¾ of a word.
+
+**Behind a local proxy:** if your route runs through a local LLM proxy, the network URL only shows the proxy address (`127.0.0.1`) — meaningless to a human. In that case the monitor resolves the real upstream via the proxy's status API and displays it: Z.ai directly, OpenRouter with the provider that actually served the request, or the proxy's emergency Z.ai fallback.
 
 German interface:
 
@@ -33,6 +35,7 @@ This monitor fills the gap: it embeds a tiny OTLP/HTTP receiver (JSON and protob
 ## How it works
 
 - **Line 1–2 (real traffic):** Qwen Code sends one OpenTelemetry span per model request to the embedded receiver. The LLM span carries the model that answered (`gen_ai.response.model`) and the usage metrics; a separate HTTP span carries the real request URL (`url.full`) and the HTTP status code. The monitor shows exactly that — **what came back, not what the configuration claims**.
+- **Proxy-aware source resolution:** when the request URL points at a loopback address, the URL says nothing about the real source. The monitor then polls the local LLM proxy's status endpoint for the leg that actually served the last request — Z.ai directly or OpenRouter, including the OpenRouter provider name — and shows that in line 1 instead of the raw loopback address.
 - **Line 3 (configuration):** the widget polls `~/.qwen/settings.json` and shows the model's context window and supported input types, plus the age of the last configuration change.
 - `otlpProtocol: "http"` also works with a standard OpenTelemetry collector; stock collectors accept both JSON and protobuf.
 
@@ -76,6 +79,7 @@ X-GNOME-Autostart-enabled=true
 | `QWEN_MONITOR_SETTINGS` | `~/.qwen/settings.json` | Path to the Qwen Code settings file |
 | `QWEN_MONITOR_OTLP_PORT` | `4318` | Port of the embedded OTLP receiver |
 | `QWEN_MONITOR_WIDTH` | `600` | Badge width in pixels |
+| `QWEN_MONITOR_PROXY_STATUS` | `http://127.0.0.1:8787/status` | Status URL of the local LLM proxy used to resolve the real source behind loopback routes |
 
 The badge can be dragged with the left mouse button (position is remembered), right-click quits it. Only one instance can run at a time.
 
