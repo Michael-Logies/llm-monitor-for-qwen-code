@@ -10,7 +10,7 @@
 
 | Line | Meaning |
 |------|---------|
-| `glm-5.3-flash · Z.ai · HTTP 200` or `glm-5.3-flash · OpenRouter · inference.net · HTTP 200` | The model that **actually answered**, the source that **really produced it** (read from the network request, not from a configuration file), and the HTTP status |
+| `glm-5.3-flash · Z.ai · HTTP 200 · effort max` or `glm-5.3-flash · OpenRouter · inference.net · HTTP 200 · effort high` | The model that **actually answered**, the source that **really produced it** (read from the network request, not from a configuration file), the HTTP status, and the reasoning effort **actually sent on the wire** (may differ from the configuration, e.g. `xhigh` vs `max`) |
 | `Thinking time (TTFB) 6.6 s · 44.1 tok/s · Reply 374 T · read 77,818 T · Duration 15.0 s` | Waiting time before the answer started ("thinking"), output speed, size of the answer, how much context the model read, total duration |
 | `last request 19 s ago · Max context 1.0M · reads images, video, PDF · config changed 5.0 h ago` | Age of the last measurement, the model's context window, supported input types, and when your Qwen Code configuration was last changed |
 
@@ -34,7 +34,7 @@ This monitor fills the gap: it embeds a tiny OTLP/HTTP receiver (JSON and protob
 
 ## How it works
 
-- **Line 1–2 (real traffic):** Qwen Code sends one OpenTelemetry span per model request to the embedded receiver. The LLM span carries the model that answered (`gen_ai.response.model`) and the usage metrics; a separate HTTP span carries the real request URL (`url.full`) and the HTTP status code. The monitor shows exactly that — **what came back, not what the configuration claims**.
+- **Line 1–2 (real traffic):** Qwen Code sends one OpenTelemetry span per model request to the embedded receiver. The LLM span carries the model that answered (`gen_ai.response.model`), the reasoning effort actually sent (`gen_ai.request.reasoning.level`), and the usage metrics; a separate HTTP span carries the real request URL (`url.full`) and the HTTP status code. The monitor shows exactly that — **what came back, not what the configuration claims**.
 - **Proxy-aware source resolution:** when the request URL points at a loopback address, the URL says nothing about the real source. The monitor then polls the local LLM proxy's status endpoint for the leg that actually served the last request — Z.ai directly or OpenRouter, including the OpenRouter provider name — and shows that in line 1 instead of the raw loopback address.
 - **Line 3 (configuration):** the widget polls `~/.qwen/settings.json` and shows the model's context window and supported input types, plus the age of the last configuration change.
 - `otlpProtocol: "http"` also works with a standard OpenTelemetry collector; stock collectors accept both JSON and protobuf.
@@ -42,7 +42,7 @@ This monitor fills the gap: it embeds a tiny OTLP/HTTP receiver (JSON and protob
 ## Requirements
 
 - Linux with X11, GTK 3, and Python 3 with GObject introspection (stock packages on Linux Mint / Ubuntu / Debian)
-- [Qwen Code](https://github.com/QwenLM/qwen-code) 0.25.x
+- [Qwen Code](https://github.com/QwenLM/qwen-code) — 0.26.0 or newer for the reasoning-effort display (telemetry added in [0.26.0](https://github.com/QwenLM/qwen-code/pull/14718); older versions work, but the effort stays hidden)
 
 ## Installation
 
@@ -92,6 +92,8 @@ The interface follows your desktop language: **German**, **English** (default), 
 - Linux/X11 with GTK 3 only.
 - Sessions must be started *after* enabling telemetry — already-running sessions do not send spans.
 - Throughput values above 300 tok/s are treated as reporting glitches of the exporter and hidden.
+- The effort value comes from Qwen Code telemetry (`gen_ai.request.reasoning.level`), which mirrors the flat `reasoning_effort` request property only — nested `reasoning.effort` objects are not mapped upstream. Routes that send effort nested (local LLM proxy, OpenRouter) therefore show no effort; Z.ai-direct routes do.
+- The effort reflects the *first* request of a session — a later `/effort` change is picked up only in a new session (upstream first-request snapshot).
 
 ## Status and maintenance
 
