@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v3, 17.10.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v4, 22.10.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
 1. Zeile 1 (aus dem OTel-Datenstrom): Modell, das tatsächlich geantwortet hat
    (gen_ai.response.model) · Anbieter-Host aus der echten Request-URL (url.full)
-   · HTTP-Status. Vor der ersten Anfrage: die konfigurierte Route aus der
-   settings.json, klar als „konfiguriert" markiert.
+   · HTTP-Status · Denkstufe, die tatsächlich gesendet wurde
+   (gen_ai.request.reasoning.level). Vor der ersten Anfrage: die konfigurierte
+   Route aus der settings.json, klar als „konfiguriert" markiert.
    Läuft die Route über einen lokalen LLM-Proxy (Loopback-Host), sagt die
    Request-URL nichts über die echte Quelle — dann löst der Monitor sie über
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
@@ -101,7 +102,7 @@ L10N = {
         'awaiting': 'warte auf erste Anfrage', 'configured': 'konfiguriert',
         'unknown': 'Route unbekannt', 'quit': 'Beenden',
         'zai_emergency': 'Z.ai (Notfall)', 'local_proxy': 'lokaler Proxy',
-        'err_generic': 'Fehler',
+        'err_generic': 'Fehler', 'effort': 'Denkstufe %s',
         'age_s': 'vor %d s', 'age_min': 'vor %d min', 'age_h': 'vor %.1f h',
     },
     'en': {
@@ -116,7 +117,7 @@ L10N = {
         'awaiting': 'waiting for first request', 'configured': 'configured',
         'unknown': 'unknown route', 'quit': 'Quit',
         'zai_emergency': 'Z.ai (emergency)', 'local_proxy': 'local proxy',
-        'err_generic': 'error',
+        'err_generic': 'error', 'effort': 'effort %s',
         'age_s': '%d s ago', 'age_min': '%d min ago', 'age_h': '%.1f h ago',
     },
     'zh': {
@@ -131,7 +132,7 @@ L10N = {
         'awaiting': '等待首次请求', 'configured': '已配置',
         'unknown': '未知路由', 'quit': '退出',
         'zai_emergency': 'Z.ai（应急）', 'local_proxy': '本地代理',
-        'err_generic': '错误',
+        'err_generic': '错误', 'effort': '推理强度 %s',
         'age_s': '%d 秒前', 'age_min': '%d 分钟前', 'age_h': '%.1f 小时前',
     },
 }
@@ -476,6 +477,7 @@ class OtlpState:
         rec = {
             'at': time.time(),
             'model': a.get('gen_ai.response.model') or a.get('gen_ai.request.model'),
+            'effort': a.get('gen_ai.request.reasoning.level'),
             'ttfb_ms': ttfb_ms,
             'tps': tps,
             'in_tok': a.get('gen_ai.usage.input_tokens'),
@@ -490,8 +492,8 @@ class OtlpState:
         with self.lock:
             self.last = rec
             self.received += 1
-        sys.stderr.write('SPAN model=%s ttfb=%s tps=%s out=%s in=%s err=%s\n'
-                         % (rec['model'], rec['ttfb_ms'], rec['tps'],
+        sys.stderr.write('SPAN model=%s effort=%s ttfb=%s tps=%s out=%s in=%s err=%s\n'
+                         % (rec['model'], rec['effort'], rec['ttfb_ms'], rec['tps'],
                             rec['out_tok'], rec['in_tok'], rec['error']))
         sys.stderr.flush()
 
@@ -757,7 +759,7 @@ class App:
             if host in LOOPBACK_HOSTS:
                 # Loopback = Anfrage lief über den lokalen LLM-Proxy; die echte
                 # Quelle (Z.ai direkt / OpenRouter + Provider) liefert /status.
-                line1 = self.render_proxy_line1(status)
+                line1 = self.render_proxy_line1(status, last.get('effort'))
             else:
                 if 'z.ai' in url:
                     color = COLOR_ZAI
@@ -773,6 +775,8 @@ class App:
                     parts.append(self.esc(host))
                 if status is not None:
                     parts.append('HTTP %s' % self.esc(status))
+                if last.get('effort'):
+                    parts.append(T('effort') % self.esc(last['effort']))
                 line1 = ' · '.join(parts)
         elif r:
             cfg = ' · '.join(str(x) for x in (r['label'], r.get('model'),
@@ -799,7 +803,7 @@ class App:
             ctx.append(T('config_changed') % fmt_age(int(self.settings_age)))
         self.set_markup(self.lbl_ctx, ' · '.join(ctx) or ' ')
 
-    def render_proxy_line1(self, status):
+    def render_proxy_line1(self, status, effort=None):
         """Zeile 1 bei Loopback-Route — echte Quelle aus der Proxy-/status-API."""
         rec = ((self.proxy_snapshot() or {}).get('last')) or {}
         leg = str(rec.get('route') or '')
@@ -823,6 +827,8 @@ class App:
                  self.esc(src)]
         if status is not None:
             parts.append('HTTP %s' % self.esc(status))
+        if effort:
+            parts.append(T('effort') % self.esc(effort))
         return ' · '.join(parts)
 
     def render_telemetry(self):
