@@ -96,6 +96,7 @@ The interface follows your desktop language: **German**, **English** (default), 
 - Throughput values above 300 tok/s are treated as reporting glitches of the exporter and hidden.
 - On Z.ai-direct routes the effort comes from Qwen Code telemetry (`gen_ai.request.reasoning.level`), which mirrors the flat `reasoning_effort` request property only — nested `reasoning.effort` objects are not mapped upstream. Routes through the local LLM proxy therefore read the effort from the proxy's status tap (what the proxy actually forwarded to the upstream); OpenRouter-direct routes (nested, no proxy tap) show no effort.
 - The effort reflects the *first* request of a session — a later `/effort` change is picked up only in a new session (upstream first-request snapshot).
+- **`max` may arrive as `xhigh` (hostname-gated effort clamp):** Qwen Code clamps a configured `reasoningEffort: max` down to `xhigh` whenever the route's hostname is not a Z.ai host — even if the actual upstream (e.g. a local proxy forwarding to Z.ai) fully supports `max` ([Issue #15235](https://github.com/QwenLM/qwen-code/issues/15235)). The badge shows the effort really sent, so the clamp is visible on the wire. Confirmed workaround: add `"extra_body": {"reasoning": {"effort": "max"}}` to the provider entry — `extra_body` merges *after* the clamp and restores the explicit value. Note that `model.samplingParams.reasoning` does **not** work for this: it skips the clamp but is never written to the request body.
 
 ## Status and maintenance
 
