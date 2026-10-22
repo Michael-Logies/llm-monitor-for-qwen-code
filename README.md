@@ -35,7 +35,7 @@ This monitor fills the gap: it embeds a tiny OTLP/HTTP receiver (JSON and protob
 ## How it works
 
 - **Line 1–2 (real traffic):** Qwen Code sends one OpenTelemetry span per model request to the embedded receiver. The LLM span carries the model that answered (`gen_ai.response.model`), the reasoning effort actually sent (`gen_ai.request.reasoning.level`), and the usage metrics; a separate HTTP span carries the real request URL (`url.full`) and the HTTP status code. The monitor shows exactly that — **what came back, not what the configuration claims**.
-- **Proxy-aware source resolution:** when the request URL points at a loopback address, the URL says nothing about the real source. The monitor then polls the local LLM proxy's status endpoint for the leg that actually served the last request — Z.ai directly or OpenRouter, including the OpenRouter provider name — and shows that in line 1 instead of the raw loopback address.
+- **Proxy-aware source resolution:** when the request URL points at a loopback address, the URL says nothing about the real source. The monitor then polls the local LLM proxy's status endpoint for the leg that actually served the last request — Z.ai directly or OpenRouter, including the OpenRouter provider name and the reasoning effort the proxy actually sent — and shows that in line 1 instead of the raw loopback address.
 - **Line 3 (configuration):** the widget polls `~/.qwen/settings.json` and shows the model's context window and supported input types, plus the age of the last configuration change.
 - `otlpProtocol: "http"` also works with a standard OpenTelemetry collector; stock collectors accept both JSON and protobuf.
 
@@ -92,7 +92,7 @@ The interface follows your desktop language: **German**, **English** (default), 
 - Linux/X11 with GTK 3 only.
 - Sessions must be started *after* enabling telemetry — already-running sessions do not send spans.
 - Throughput values above 300 tok/s are treated as reporting glitches of the exporter and hidden.
-- The effort value comes from Qwen Code telemetry (`gen_ai.request.reasoning.level`), which mirrors the flat `reasoning_effort` request property only — nested `reasoning.effort` objects are not mapped upstream. Routes that send effort nested (local LLM proxy, OpenRouter) therefore show no effort; Z.ai-direct routes do.
+- On Z.ai-direct routes the effort comes from Qwen Code telemetry (`gen_ai.request.reasoning.level`), which mirrors the flat `reasoning_effort` request property only — nested `reasoning.effort` objects are not mapped upstream. Routes through the local LLM proxy therefore read the effort from the proxy's status tap (what the proxy actually forwarded to the upstream); OpenRouter-direct routes (nested, no proxy tap) show no effort.
 - The effort reflects the *first* request of a session — a later `/effort` change is picked up only in a new session (upstream first-request snapshot).
 
 ## Status and maintenance
