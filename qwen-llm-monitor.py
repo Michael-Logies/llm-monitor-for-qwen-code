@@ -5,8 +5,9 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
 1. Zeile 1 (aus dem OTel-Datenstrom): Modell, das tatsächlich geantwortet hat
    (gen_ai.response.model) · Anbieter-Host aus der echten Request-URL (url.full)
-   · HTTP-Status · Denkstufe, die tatsächlich gesendet wurde
-   (gen_ai.request.reasoning.level). Vor der ersten Anfrage: die konfigurierte
+   · HTTP-Status · Denkstufe, die tatsächlich gesendet wurde — aus der
+   Telemetrie (gen_ai.request.reasoning.level) bzw. bei Proxy-Routen aus dem
+   /status-Tap des Proxys. Vor der ersten Anfrage: die konfigurierte
    Route aus der settings.json, klar als „konfiguriert" markiert.
    Läuft die Route über einen lokalen LLM-Proxy (Loopback-Host), sagt die
    Request-URL nichts über die echte Quelle — dann löst der Monitor sie über
@@ -468,6 +469,19 @@ class OtlpState:
         if ttfb_ms is None and ttfb_s is not None:
             ttfb_ms = float(ttfb_s) * 1000.0
         out = a.get('gen_ai.usage.output_tokens')
+        # Spans ganz ohne Messwerte (und ohne Fehler) übernehmen die Anzeige
+        # nicht — sonst verdrängen z. B. abgebrochene Neben-Calls die volle
+        # Anzeige der echten Anfrage binnen Sekunden.
+        if ttfb_ms is None and out is None \
+                and a.get('gen_ai.usage.input_tokens') is None \
+                and span['status'] != 2 \
+                and a.get('error.type') is None \
+                and a.get('errorStatusCode') is None:
+            sys.stderr.write('SPAN(ohne Messwerte) ignoriert model=%s\n'
+                             % (a.get('gen_ai.response.model')
+                                or a.get('gen_ai.request.model')))
+            sys.stderr.flush()
+            return
         dur_s = None
         if span['start_ns'] and span['end_ns']:
             dur_s = (span['end_ns'] - span['start_ns']) / 1e9
@@ -808,6 +822,10 @@ class App:
         rec = ((self.proxy_snapshot() or {}).get('last')) or {}
         leg = str(rec.get('route') or '')
         model = rec.get('modelReported') or rec.get('model') or T('unknown')
+        # Denkstufe: Der Proxy-Tap liefert den Wert, den der Proxy tatsächlich
+        # an die Leg weitergeleitet hat — Vorrang vor dem (auf Proxy-Routen
+        # ohnehin fehlenden) Telemetrie-Wert.
+        effort = rec.get('effort') or effort
         if leg.startswith('OR'):
             color = COLOR_OR
             src = 'OpenRouter'
