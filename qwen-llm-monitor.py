@@ -262,9 +262,16 @@ def _key_value(buf):
 
 
 def _parse_span(buf):
-    name, start_ns, end_ns, attrs, status = None, None, None, {}, 0
+    name, start_ns, end_ns, attrs, status, trace_id = None, None, None, {}, 0, None
+    span_id = parent_span_id = None
     for fno, wt, v in _iter_fields(buf):
-        if fno == 4:
+        if fno == 1 and wt == 2:  # Span.trace_id (bytes) — für den LLM-Zug-Filter
+            trace_id = v.hex()
+        elif fno == 2 and wt == 2:
+            span_id = v.hex()
+        elif fno == 3 and wt == 2:
+            parent_span_id = v.hex()
+        elif fno == 4:
             name = v.decode('utf-8', 'replace')
         elif fno == 6 and wt == 1:
             start_ns = struct.unpack('<Q', v)[0]
@@ -279,7 +286,8 @@ def _parse_span(buf):
                 if sf == 1:
                     status = sv
     return {'name': name, 'start_ns': start_ns, 'end_ns': end_ns,
-            'attrs': attrs, 'status': status}
+            'attrs': attrs, 'status': status, 'trace_id': trace_id,
+            'span_id': span_id, 'parent_span_id': parent_span_id}
 
 
 def _span_from_json(sp):
@@ -305,7 +313,9 @@ def _span_from_json(sp):
 
     return {'name': sp.get('name'), 'start_ns': _ns(sp.get('startTimeUnixNano')),
             'end_ns': _ns(sp.get('endTimeUnixNano')), 'attrs': attrs,
-            'status': int((sp.get('status') or {}).get('code') or 0)}
+            'status': int((sp.get('status') or {}).get('code') or 0),
+            'trace_id': sp.get('traceId'), 'span_id': sp.get('spanId'),
+            'parent_span_id': sp.get('parentSpanId')}
 
 
 def parse_otlp_traces(body):
@@ -451,6 +461,22 @@ class OtlpState:
         self.last = None       # dict je LLM-Span
         self.received = 0
         self.http = None       # letzter HTTP-Client-Span (url_full, http_status)
+        self.llm_traces = {}   # trace_id -> empfangen um; HTTP-Spans zählen nur mit LLM-Zug
+        self.llm_span_ids = {} # span_id -> empfangen um; für Eltern-Match der HTTP-Spans
+
+    def is_llm_trace(self, tid):
+        now = time.time()
+        with self.lock:
+            for k in [k for k, t in self.llm_traces.items() if now - t > 1800]:
+                del self.llm_traces[k]
+            return tid in self.llm_traces
+
+    def is_llm_parent(self, pid):
+        now = time.time()
+        with self.lock:
+            for k in [k for k, t in self.llm_span_ids.items() if now - t > 1800]:
+                del self.llm_span_ids[k]
+            return pid in self.llm_span_ids
 
     def set_http(self, attrs):
         info = {'url_full': attrs.get('url.full') or '',
@@ -464,6 +490,13 @@ class OtlpState:
 
     def add(self, span):
         a = span['attrs']
+        tid = span.get('trace_id')
+        sid = span.get('span_id')
+        if tid:  # auch messwertlose LLM-Spans registrieren ihren Zug
+            with self.lock:
+                self.llm_traces[tid] = time.time()
+                if sid:
+                    self.llm_span_ids[sid] = time.time()
         ttfb_s = a.get('gen_ai.response.time_to_first_chunk')
         ttfb_ms = a.get('ttft_ms')
         if ttfb_ms is None and ttfb_s is not None:
@@ -550,11 +583,33 @@ class OtlpHandler(BaseHTTPRequestHandler):
                 except Exception as pe:
                     sys.stderr.write('parse: %r\n' % pe)
                     spans = []
+                # Zwei Durchläufe: erst registrieren die LLM-Spans ihre IDs,
+                # dann gilt ein HTTP-Span nur als API-Call, wenn er DIREKTES
+                # Kind eines LLM-Spans ist (sonst web_fetch & Co.); ohne
+                # Parent-Info entscheidet der LLM-Zug (trace_id).
                 for span in spans:
                     if 'gen_ai.request.model' in span['attrs']:
                         STATE.add(span)
-                    elif 'url.full' in span['attrs']:
+                for span in spans:
+                    if 'gen_ai.request.model' in span['attrs'] \
+                            or 'url.full' not in span['attrs']:
+                        continue
+                    try:
+                        host = urllib.parse.urlsplit(
+                            span['attrs'].get('url.full') or '').hostname or '?'
+                    except Exception:
+                        host = '?'
+                    pid = span.get('parent_span_id')
+                    tid = span.get('trace_id')
+                    if (pid and STATE.is_llm_parent(pid)) or \
+                            (not pid and tid and STATE.is_llm_trace(tid)):
                         STATE.set_http(span['attrs'])
+                        sys.stderr.write('HTTP-Span akzeptiert (LLM-Zug) host=%s\n'
+                                         % host)
+                    else:
+                        sys.stderr.write('HTTP-Span (kein LLM-Zug) ignoriert host=%s\n'
+                                         % host)
+                    sys.stderr.flush()
         except Exception as e:
             sys.stderr.write('OTLP handler: %r\n' % e)
         self.send_response(200)
