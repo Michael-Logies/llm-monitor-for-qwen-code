@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v4, 22.10.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v4.2, 15.11.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
@@ -14,7 +14,8 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
    eingesetzten Provider, oder Z.ai als Notfall-Fallback.
 2. Zeile 2 (OTel-Datenstrom): Denkphase (TTFB) · tok/s · Antwort-Tokens ·
-   gelesene Tokens (davon Cache) · Dauer.
+   gelesene Tokens (davon Cache-Lese/-Schreibzugriffe; Cache-Write seit
+   Qwen Code 0.27.1, gen_ai.usage.cache_creation.input_tokens) · Dauer.
 3. Zeile 3: Alter der letzten Messung · Max-Kontextfenster · unterstützte
    Eingaben · Alter der letzten Konfig-Änderung.
 
@@ -93,7 +94,7 @@ LANG = 'de' if _LANG.startswith('de') else ('zh' if _LANG.startswith('zh') else 
 L10N = {
     'de': {
         'thinking': 'Denkphase (TTFB)', 'reply': 'Antwort', 'read': 'gelesen',
-        'from_cache': 'aus Cache', 'duration': 'Dauer', 'tokps': 'tok/s',
+        'from_cache': 'aus Cache', 'cache_write': 'nach Cache', 'duration': 'Dauer', 'tokps': 'tok/s',
         'last_req': 'letzte Anfrage %s', 'max_ctx': 'Max-Kontext',
         'reads': 'liest', 'config_changed': 'Konfig geändert %s',
         'no_data': 'Telemetrie: noch keine Daten (%d) — neue Qwen-Session nötig?',
@@ -108,7 +109,7 @@ L10N = {
     },
     'en': {
         'thinking': 'Thinking time (TTFB)', 'reply': 'Reply', 'read': 'read',
-        'from_cache': 'from cache', 'duration': 'Duration', 'tokps': 'tok/s',
+        'from_cache': 'from cache', 'cache_write': 'to cache', 'duration': 'Duration', 'tokps': 'tok/s',
         'last_req': 'last request %s', 'max_ctx': 'Max context',
         'reads': 'reads', 'config_changed': 'config changed %s',
         'no_data': 'Telemetry: no data yet (%d) — new Qwen session needed?',
@@ -123,7 +124,7 @@ L10N = {
     },
     'zh': {
         'thinking': '思考阶段 (TTFB)', 'reply': '回答', 'read': '已读取',
-        'from_cache': '来自缓存', 'duration': '耗时', 'tokps': 'tok/s',
+        'from_cache': '来自缓存', 'cache_write': '写入缓存', 'duration': '耗时', 'tokps': 'tok/s',
         'last_req': '上次请求 %s', 'max_ctx': '最大上下文',
         'reads': '支持', 'config_changed': '配置 %s更改',
         'no_data': '遥测：暂无数据 (%d) — 需要新的 Qwen 会话？',
@@ -507,6 +508,7 @@ class OtlpState:
         # Anzeige der echten Anfrage binnen Sekunden.
         if ttfb_ms is None and out is None \
                 and a.get('gen_ai.usage.input_tokens') is None \
+                and a.get('gen_ai.usage.cache_creation.input_tokens') is None \
                 and span['status'] != 2 \
                 and a.get('error.type') is None \
                 and a.get('errorStatusCode') is None:
@@ -529,6 +531,7 @@ class OtlpState:
             'tps': tps,
             'in_tok': a.get('gen_ai.usage.input_tokens'),
             'cache_tok': a.get('gen_ai.usage.cache_read.input_tokens'),
+            'cache_write_tok': a.get('gen_ai.usage.cache_creation.input_tokens'),
             'out_tok': out,
             'dur_s': dur_s,
             'url_full': a.get('url.full') or '',
@@ -928,8 +931,15 @@ class App:
             ins = ''
             if last.get('in_tok') is not None:
                 ins = '%s %s T' % (T('read'), fmt_int(last['in_tok']))
+                cache_bits = []
                 if last.get('cache_tok'):
-                    ins += ' (%s %s)' % (fmt_int(last['cache_tok']), T('from_cache'))
+                    cache_bits.append('%s %s' % (fmt_int(last['cache_tok']),
+                                                 T('from_cache')))
+                if last.get('cache_write_tok'):
+                    cache_bits.append('%s %s' % (fmt_int(last['cache_write_tok']),
+                                                 T('cache_write')))
+                if cache_bits:
+                    ins += ' (%s)' % ', '.join(cache_bits)
             if ins:
                 parts.append(ins)
             if last.get('dur_s'):
