@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v4.2, 15.11.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v4.3, 15.11.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
@@ -14,8 +14,8 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
    eingesetzten Provider, oder Z.ai als Notfall-Fallback.
 2. Zeile 2 (OTel-Datenstrom): Denkphase (TTFB) · tok/s · Antwort-Tokens ·
-   gelesene Tokens (davon Cache-Lese/-Schreibzugriffe; Cache-Write seit
-   Qwen Code 0.27.1, gen_ai.usage.cache_creation.input_tokens) · Dauer.
+   gelesene Tokens (Cache-Leseanteil als Prozent; Cache-Write absolut,
+   seit Qwen Code 0.27.1, gen_ai.usage.cache_creation.input_tokens) · Dauer.
 3. Zeile 3: Alter der letzten Messung · Max-Kontextfenster · unterstützte
    Eingaben · Alter der letzten Konfig-Änderung.
 
@@ -932,9 +932,9 @@ class App:
             if last.get('in_tok') is not None:
                 ins = '%s %s T' % (T('read'), fmt_int(last['in_tok']))
                 cache_bits = []
-                if last.get('cache_tok'):
-                    cache_bits.append('%s %s' % (fmt_int(last['cache_tok']),
-                                                 T('from_cache')))
+                if last.get('cache_tok') and last['in_tok']:
+                    pct = int(round(100.0 * last['cache_tok'] / last['in_tok']))
+                    cache_bits.append('%d%% %s' % (pct, T('from_cache')))
                 if last.get('cache_write_tok'):
                     cache_bits.append('%s %s' % (fmt_int(last['cache_write_tok']),
                                                  T('cache_write')))
