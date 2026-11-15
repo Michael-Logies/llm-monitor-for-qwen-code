@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v4.3, 15.11.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v4.4, 15.11.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
@@ -14,8 +14,9 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
    eingesetzten Provider, oder Z.ai als Notfall-Fallback.
 2. Zeile 2 (OTel-Datenstrom): Denkphase (TTFB) · tok/s · Antwort-Tokens ·
-   gelesene Tokens (Cache-Leseanteil als Prozent; Cache-Write absolut,
-   seit Qwen Code 0.27.1, gen_ai.usage.cache_creation.input_tokens) · Dauer.
+   gelesene Tokens (Aufteilung als Prozent: aus Cache, in Cache, Rest —
+   Summe immer 100; Cache-Write seit Qwen Code 0.27.1,
+   gen_ai.usage.cache_creation.input_tokens) · Dauer.
 3. Zeile 3: Alter der letzten Messung · Max-Kontextfenster · unterstützte
    Eingaben · Alter der letzten Konfig-Änderung.
 
@@ -94,7 +95,7 @@ LANG = 'de' if _LANG.startswith('de') else ('zh' if _LANG.startswith('zh') else 
 L10N = {
     'de': {
         'thinking': 'Denkphase (TTFB)', 'reply': 'Antwort', 'read': 'gelesen',
-        'from_cache': 'aus Cache', 'cache_write': 'nach Cache', 'duration': 'Dauer', 'tokps': 'tok/s',
+        'from_cache': 'aus Cache', 'to_cache': 'in Cache', 'rest': 'Rest', 'duration': 'Dauer', 'tokps': 'tok/s',
         'last_req': 'letzte Anfrage %s', 'max_ctx': 'Max-Kontext',
         'reads': 'liest', 'config_changed': 'Konfig geändert %s',
         'no_data': 'Telemetrie: noch keine Daten (%d) — neue Qwen-Session nötig?',
@@ -109,7 +110,7 @@ L10N = {
     },
     'en': {
         'thinking': 'Thinking time (TTFB)', 'reply': 'Reply', 'read': 'read',
-        'from_cache': 'from cache', 'cache_write': 'to cache', 'duration': 'Duration', 'tokps': 'tok/s',
+        'from_cache': 'from cache', 'to_cache': 'to cache', 'rest': 'rest', 'duration': 'Duration', 'tokps': 'tok/s',
         'last_req': 'last request %s', 'max_ctx': 'Max context',
         'reads': 'reads', 'config_changed': 'config changed %s',
         'no_data': 'Telemetry: no data yet (%d) — new Qwen session needed?',
@@ -124,7 +125,7 @@ L10N = {
     },
     'zh': {
         'thinking': '思考阶段 (TTFB)', 'reply': '回答', 'read': '已读取',
-        'from_cache': '来自缓存', 'cache_write': '写入缓存', 'duration': '耗时', 'tokps': 'tok/s',
+        'from_cache': '来自缓存', 'to_cache': '写入缓存', 'rest': '其余', 'duration': '耗时', 'tokps': 'tok/s',
         'last_req': '上次请求 %s', 'max_ctx': '最大上下文',
         'reads': '支持', 'config_changed': '配置 %s更改',
         'no_data': '遥测：暂无数据 (%d) — 需要新的 Qwen 会话？',
@@ -931,15 +932,25 @@ class App:
             ins = ''
             if last.get('in_tok') is not None:
                 ins = '%s %s T' % (T('read'), fmt_int(last['in_tok']))
-                cache_bits = []
-                if last.get('cache_tok') and last['in_tok']:
-                    pct = int(round(100.0 * last['cache_tok'] / last['in_tok']))
-                    cache_bits.append('%d%% %s' % (pct, T('from_cache')))
-                if last.get('cache_write_tok'):
-                    cache_bits.append('%s %s' % (fmt_int(last['cache_write_tok']),
-                                                 T('cache_write')))
-                if cache_bits:
-                    ins += ' (%s)' % ', '.join(cache_bits)
+                total = last['in_tok']
+                read = last.get('cache_tok') or 0
+                write = last.get('cache_write_tok') or 0
+                # Klammer nur, wenn der Anbieter überhaupt Cache-Zahlen meldet
+                # (fehlendes Attribut ≠ 0); Rest = frische Eingabe dieses Zugs
+                # (weder aus dem Cache gelesen noch hinein geschrieben).
+                if total and (last.get('cache_tok') is not None
+                              or last.get('cache_write_tok') is not None):
+                    vals = [read, write, max(0, total - read - write)]
+                    raw = [100.0 * v / total for v in vals]
+                    pct = [int(x) for x in raw]
+                    # Largest-Remainder-Rundung: die drei Prozentwerte
+                    # summieren sich garantiert zu exakt 100.
+                    for i in sorted(range(3), key=lambda j: raw[j] - pct[j],
+                                    reverse=True)[:100 - sum(pct)]:
+                        pct[i] += 1
+                    ins += ' (%d%% %s, %d%% %s, %d%% %s)' % (
+                        pct[0], T('from_cache'), pct[1], T('to_cache'),
+                        pct[2], T('rest'))
             if ins:
                 parts.append(ins)
             if last.get('dur_s'):
