@@ -10,7 +10,7 @@
 
 | Line | Meaning |
 |------|---------|
-| `glm-5.3-flash · Z.ai · HTTP 200 · effort max` or `glm-5.3-flash · OpenRouter · inference.net · HTTP 200 · effort high` | The model that **actually answered**, the source that **really produced it** (read from the network request, not from a configuration file), the HTTP status, and the reasoning effort **actually sent on the wire** (may differ from the configuration, e.g. `xhigh` vs `max`) |
+| `glm-5.3-flash · Z.ai · HTTP 200 · effort max`, `glm-5.3-flash · openrouter.ai · BaseTen · HTTP 200` or `glm-5.3-flash · OpenRouter · inference.net · HTTP 200 · effort high` | The model that **actually answered**, the source that **really produced it** (read from the network request, not from a configuration file), the HTTP status, and the reasoning effort **actually sent on the wire** (may differ from the configuration, e.g. `xhigh` vs `max`). On **direct OpenRouter routes**, the name of the routing backend that served the request (`openrouter.provider`, Qwen Code ≥ 0.28.3) appears between host and status — it rotates per request (BaseTen, Inceptron, InferenceNet, …). Behind the local proxy, the provider comes from the proxy's status tap instead |
 | `Thinking time (TTFB) 6.6 s · 44.1 tok/s · Reply 374 T · read 77,818 T · Duration 15.0 s` | Waiting time before the answer started ("thinking"), output speed, size of the answer, how much context the model read, total duration |
 | `last request 19 s ago · Max context 1.0M · reads images, video, PDF · config changed 5.0 h ago` | Age of the last measurement, the model's context window, supported input types, and when your Qwen Code configuration was last changed |
 
@@ -21,6 +21,10 @@ A token ("T") is the unit language models count text in — roughly ¾ of a word
 German interface:
 
 ![LLM Monitor (German interface)](screenshots/monitor-de.png)
+
+Direct OpenRouter route with the routing backend shown in line 1 (v5.0):
+
+![LLM Monitor v5 — OpenRouter routing backend](screenshots/monitor-v5-openrouter-provider.png)
 
 Chinese interface:
 
@@ -37,13 +41,14 @@ This monitor fills the gap: it embeds a tiny OTLP/HTTP receiver (JSON and protob
 - **Line 1–2 (real traffic):** Qwen Code sends one OpenTelemetry span per model request to the embedded receiver. The LLM span carries the model that answered (`gen_ai.response.model`), the reasoning effort actually sent (`gen_ai.request.reasoning.level`), and the usage metrics; a separate HTTP span carries the real request URL (`url.full`) and the HTTP status code. The monitor accepts only HTTP spans that are a direct child of a model-request span (matched via parent span ID) — unrelated HTTP traffic from the same process (web fetches, update checks) never displaces the route display. The monitor shows exactly that — **what came back, not what the configuration claims**.
 - **Many sessions, one badge:** every running Qwen Code session streams its spans to the same embedded receiver, and the monitor keeps only a single record — the badge always shows the most recently completed model request across all sessions ("last wins"). The figures in line 2 (thinking time, throughput, tokens, duration) belong to that one request; they are never summed or averaged across sessions. How stale the display is can be read from the "last request X ago" age in line 3.
 - **Proxy-aware source resolution:** when the request URL points at a loopback address, the URL says nothing about the real source. The monitor then polls the local LLM proxy's status endpoint for the leg that actually served the last request — Z.ai directly or OpenRouter, including the OpenRouter provider name and the reasoning effort the proxy actually sent — and shows that in line 1 instead of the raw loopback address.
+- **Routing backend on direct OpenRouter routes (v5.0):** since Qwen Code 0.28.3 the model-request span carries `openrouter.provider` ([PR #16495](https://github.com/QwenLM/qwen-code/pull/16495), born from [issue #14629](https://github.com/QwenLM/qwen-code/issues/14629)) — the routing backend that actually served the request. The monitor displays it in line 1 right after `openrouter.ai`. Error spans carry no provider field (the error body has none), so they correctly show no backend name.
 - **Line 3 (configuration):** the widget polls `~/.qwen/settings.json` and shows the model's context window and supported input types, plus the age of the last configuration change.
 - `otlpProtocol: "http"` also works with a standard OpenTelemetry collector; stock collectors accept both JSON and protobuf.
 
 ## Requirements
 
 - Linux with X11, GTK 3, and Python 3 with GObject introspection (stock packages on Linux Mint / Ubuntu / Debian)
-- [Qwen Code](https://github.com/QwenLM/qwen-code) — 0.26.0 or newer for the reasoning-effort display (telemetry added in [0.26.0](https://github.com/QwenLM/qwen-code/pull/14718); older versions work, but the effort stays hidden)
+- [Qwen Code](https://github.com/QwenLM/qwen-code) — 0.26.0 or newer for the reasoning-effort display (telemetry added in [0.26.0](https://github.com/QwenLM/qwen-code/pull/14718); older versions work, but the effort stays hidden); **0.28.3 or newer** for the routing-backend name on direct OpenRouter routes ([`openrouter.provider`](https://github.com/QwenLM/qwen-code/pull/16495), released in [v0.28.3](https://github.com/QwenLM/qwen-code/releases/tag/v0.28.3) — older versions work, the name just stays hidden)
 
 ## Installation
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v4.4, 15.11.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v5.0, 21.11.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
@@ -7,8 +7,12 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    (gen_ai.response.model) · Anbieter-Host aus der echten Request-URL (url.full)
    · HTTP-Status · Denkstufe, die tatsächlich gesendet wurde — aus der
    Telemetrie (gen_ai.request.reasoning.level) bzw. bei Proxy-Routen aus dem
-   /status-Tap des Proxys. Vor der ersten Anfrage: die konfigurierte
-   Route aus der settings.json, klar als „konfiguriert" markiert.
+   /status-Tap des Proxys. Bei OpenRouter-Direktrouten (Request-URL
+   openrouter.ai) kommt seit Qwen Code 0.28.3 zusätzlich der Routing-Provider
+   hinzu, der die Anfrage tatsächlich bedient hat (Span-Attribut
+   openrouter.provider — QwenLM/qwen-code PR #16495). Vor der ersten Anfrage:
+   die konfigurierte Route aus der settings.json, klar als „konfiguriert"
+   markiert.
    Läuft die Route über einen lokalen LLM-Proxy (Loopback-Host), sagt die
    Request-URL nichts über die echte Quelle — dann löst der Monitor sie über
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
@@ -528,6 +532,10 @@ class OtlpState:
             'at': time.time(),
             'model': a.get('gen_ai.response.model') or a.get('gen_ai.request.model'),
             'effort': a.get('gen_ai.request.reasoning.level'),
+            # OpenRouter-Direktroute: Routing-Provider des Zugs (Attribut
+            # openrouter.provider, Qwen Code ≥ 0.28.3 — PR #16495); fehlt auf
+            # allen anderen Routen und in älteren Qwen-Versionen.
+            'or_provider': a.get('openrouter.provider'),
             'ttfb_ms': ttfb_ms,
             'tps': tps,
             'in_tok': a.get('gen_ai.usage.input_tokens'),
@@ -543,9 +551,9 @@ class OtlpState:
         with self.lock:
             self.last = rec
             self.received += 1
-        sys.stderr.write('SPAN model=%s effort=%s ttfb=%s tps=%s out=%s in=%s err=%s\n'
-                         % (rec['model'], rec['effort'], rec['ttfb_ms'], rec['tps'],
-                            rec['out_tok'], rec['in_tok'], rec['error']))
+        sys.stderr.write('SPAN model=%s effort=%s orprov=%s ttfb=%s tps=%s out=%s in=%s err=%s\n'
+                         % (rec['model'], rec['effort'], rec['or_provider'], rec['ttfb_ms'],
+                            rec['tps'], rec['out_tok'], rec['in_tok'], rec['error']))
         sys.stderr.flush()
 
     def snapshot(self):
@@ -846,6 +854,11 @@ class App:
                          % (color, self.esc(last.get('model') or T('unknown')))]
                 if host:
                     parts.append(self.esc(host))
+                # OpenRouter-Direktroute: Routing-Provider des Zugs anzeigen
+                # (Attribut openrouter.provider, Qwen Code ≥ 0.28.3) — das
+                # Gegenstück zum „OpenRouter · <Provider>" der Proxy-Routen.
+                if 'openrouter' in url and last.get('or_provider'):
+                    parts.append(self.esc(last['or_provider']))
                 if status is not None:
                     parts.append('HTTP %s' % self.esc(status))
                 if last.get('effort'):
