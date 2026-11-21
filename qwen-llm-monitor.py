@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM-Monitor für Qwen Code (v5.0, 21.11.2026) — GTK3-Desktop-Badge.
+"""LLM-Monitor für Qwen Code (v5.1, 21.11.2026) — GTK3-Desktop-Badge.
 
 Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
 
@@ -16,7 +16,9 @@ Zeigt in drei Zeilen, was die laufenden Qwen-Code-Sessions wirklich tun:
    Läuft die Route über einen lokalen LLM-Proxy (Loopback-Host), sagt die
    Request-URL nichts über die echte Quelle — dann löst der Monitor sie über
    die /status-API des Proxys auf: Z.ai direkt, OpenRouter mit dem tatsächlich
-   eingesetzten Provider, oder Z.ai als Notfall-Fallback.
+   eingesetzten Provider, oder Z.ai als Notfall-Fallback. Der Weg selbst
+   erscheint dabei als „lokaler Proxy" an der Stelle, an der Direktverkehr den
+   Anbieter-Host zeigt.
 2. Zeile 2 (OTel-Datenstrom): Denkphase (TTFB) · tok/s · Antwort-Tokens ·
    gelesene Tokens (Aufteilung als Prozent: aus Cache, in Cache, Rest —
    Summe immer 100; Cache-Write seit Qwen Code 0.27.1,
@@ -913,8 +915,13 @@ class App:
             # Proxy nicht erreichbar oder ohne Anfrage — Loopback kennzeichnen.
             color = COLOR_PROXY
             src = T('local_proxy')
-        parts = ['<span foreground="%s">%s</span>' % (color, self.esc(model)),
-                 self.esc(src)]
+        parts = ['<span foreground="%s">%s</span>' % (color, self.esc(model))]
+        if leg:
+            # Weg-Marker an der Stelle, an der Direktverkehr den Anbieter-Host
+            # zeigt (api.z.ai / openrouter.ai); danach die aufgelöste Quelle.
+            # Bei nicht erreichbarem Proxy (leg leer) nur EIN Marker, orange.
+            parts.append(self.esc(T('local_proxy')))
+        parts.append('<span foreground="%s">%s</span>' % (color, self.esc(src)))
         if status is not None:
             parts.append('HTTP %s' % self.esc(status))
         if effort:
